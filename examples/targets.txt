@@ -1,0 +1,11 @@
+# Example IP list file for RDP screenshot tool
+# One IP address per line
+# Supports IP:PORT format
+
+# Local examples (replace with your targets)
+# 192.168.1.100
+# 192.168.1.101:3389
+# 10.0.0.50
+
+# For testing, you can use localhost if RDP is running
+# 127.0.0.1:3389

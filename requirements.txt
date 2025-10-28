@@ -1,0 +1,8 @@
+# RDP Screenshot Tool Requirements
+# Python 3.7+
+
+# Image processing
+Pillow>=9.0.0
+
+# Optional: For enhanced protocol handling (if needed in future)
+# cryptography>=3.4.8
