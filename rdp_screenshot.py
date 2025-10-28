@@ -150,22 +150,28 @@ class RDPScreenshot:
 
         payload = cookie + neg_req
 
-        # X.224 header
-        x224_length = len(payload) + 6
-        x224_header = struct.pack('>BBBBB',
-            x224_length,  # Length
-            0xe0,  # PDU type: Connection Request
-            0x00, 0x00,  # Destination reference
-            0x00  # Source reference
+        # X.224 Connection Request header
+        # Format: LI (1) + CR (1) + DST-REF (2) + SRC-REF (2) + CLASS (1) = 7 bytes
+        # LI (Length Indicator) = length of header + data - 1 (excluding LI itself)
+        x224_length = len(payload) + 6  # 6 = CR + DST-REF + SRC-REF + CLASS
+        x224_header = struct.pack('>BBHHB',
+            x224_length,  # LI: Length Indicator
+            0xe0,  # CR code: Connection Request (11100000)
+            0x0000,  # DST-REF: Destination Reference (2 bytes)
+            0x0000,  # SRC-REF: Source Reference (2 bytes)
+            0x00  # CLASS: Class 0, Option 0
         )
 
-        # TPKT header
+        # TPKT header (4 bytes)
         tpkt_length = len(x224_header) + len(payload) + 4
         tpkt_header = struct.pack('>BBH',
             0x03,  # Version
             0x00,  # Reserved
             tpkt_length
         )
+
+        log_debug(f"X.224 header: {x224_header.hex()}")
+        log_debug(f"TPKT length: {tpkt_length}, X.224 length: {x224_length}")
 
         return tpkt_header + x224_header + payload
 
@@ -256,7 +262,8 @@ class RDPScreenshot:
         mcs_data = self._encode_mcs_connect_initial(gcc_ccr)
 
         # TPKT + X.224 Data header
-        x224_data = struct.pack('BB', 2, 0xf0, 0x80)  # X.224 Data TPDU
+        # X.224 Data TPDU: LI (1 byte) + Code (1 byte)
+        x224_data = struct.pack('BB', 2, 0xf0)  # X.224 Data TPDU (standard 2-byte format)
 
         total_length = 4 + len(x224_data) + len(mcs_data)
         tpkt_header = struct.pack('>BBH', 0x03, 0x00, total_length)
