@@ -13,6 +13,7 @@ import argparse
 import sys
 import os
 import time
+import ssl
 from pathlib import Path
 from typing import List, Tuple, Optional
 import xml.etree.ElementTree as ET
@@ -24,27 +25,74 @@ except ImportError:
     print("Error: Pillow library not found. Install with: pip install Pillow")
     sys.exit(1)
 
+# Global verbose flag
+VERBOSE = False
+
+def log_verbose(msg: str):
+    """Print verbose message if verbose mode is enabled"""
+    if VERBOSE:
+        print(msg)
+
+def log_debug(msg: str):
+    """Print debug message if verbose mode is enabled"""
+    if VERBOSE:
+        print(f"[DEBUG] {msg}")
+
 
 class RDPScreenshot:
     """Captures RDP screenshots by performing pre-authentication handshake"""
 
-    def __init__(self, host: str, port: int = 3389, timeout: int = 10, width: int = 1024, height: int = 768):
+    # Protocol constants
+    PROTOCOL_RDP = 0x00000000  # Standard RDP Security
+    PROTOCOL_SSL = 0x00000001  # TLS 1.0
+    PROTOCOL_HYBRID = 0x00000002  # CredSSP (NLA)
+    PROTOCOL_RDSTLS = 0x00000004  # RDSTLS
+    PROTOCOL_HYBRID_EX = 0x00000008  # CredSSP with Early User Auth
+
+    def __init__(self, host: str, port: int = 3389, timeout: int = 10, width: int = 1024, height: int = 768, protocol: int = None):
         self.host = host
         self.port = port
         self.timeout = timeout
         self.width = width
         self.height = height
         self.sock = None
+        self.use_tls = False
+        self.selected_protocol = protocol
+        self.negotiated_protocol = None
 
     def connect(self) -> bool:
         """Establish TCP connection to RDP server"""
         try:
+            log_verbose(f"[*] Establishing TCP connection to {self.host}:{self.port}")
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(self.timeout)
             self.sock.connect((self.host, self.port))
+            log_verbose(f"[+] TCP connection established")
             return True
         except (socket.timeout, socket.error, ConnectionRefusedError) as e:
             print(f"[-] Connection failed to {self.host}:{self.port} - {e}")
+            return False
+
+    def enable_tls(self) -> bool:
+        """Wrap socket with TLS/SSL"""
+        try:
+            log_verbose("[*] Negotiating TLS/SSL connection")
+            # Create SSL context with relaxed settings for older servers
+            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            # Support older TLS versions
+            context.minimum_version = ssl.TLSVersion.TLSv1
+            context.options &= ~ssl.OP_NO_TLSv1
+            context.options &= ~ssl.OP_NO_TLSv1_1
+
+            # Wrap the socket
+            self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
+            self.use_tls = True
+            log_verbose(f"[+] TLS/SSL negotiation successful (Protocol: {self.sock.version()})")
+            return True
+        except Exception as e:
+            log_verbose(f"[-] TLS/SSL negotiation failed: {e}")
             return False
 
     def close(self):
@@ -58,6 +106,8 @@ class RDPScreenshot:
     def send_packet(self, data: bytes):
         """Send data to RDP server"""
         try:
+            log_debug(f"Sending {len(data)} bytes")
+            log_debug(f"Data (hex): {data[:64].hex()}...")
             self.sock.sendall(data)
         except socket.error as e:
             raise Exception(f"Send failed: {e}")
@@ -68,23 +118,34 @@ class RDPScreenshot:
             data = self.sock.recv(size)
             if not data:
                 raise Exception("Connection closed by server")
+            log_debug(f"Received {len(data)} bytes")
+            log_debug(f"Data (hex): {data[:64].hex()}...")
             return data
         except socket.timeout:
             raise Exception("Timeout receiving data")
         except socket.error as e:
             raise Exception(f"Receive failed: {e}")
 
-    def create_x224_connection_request(self) -> bytes:
+    def create_x224_connection_request(self, protocol: int = None) -> bytes:
         """Create X.224 Connection Request PDU"""
-        # X.224 Connection Request for RDP with TLS negotiation
+        # X.224 Connection Request for RDP with protocol negotiation
         cookie = b"Cookie: mstshash=user\r\n"
+
+        # Determine which protocol to request
+        if protocol is None:
+            # Auto-negotiate: request TLS and standard RDP
+            requested_protocol = self.PROTOCOL_SSL | self.PROTOCOL_RDP
+        else:
+            requested_protocol = protocol
+
+        log_debug(f"Requesting protocol: 0x{requested_protocol:08x}")
 
         # RDP Negotiation Request (TYPE_RDP_NEG_REQ)
         neg_req = struct.pack('<BBHI',
             0x01,  # Type: TYPE_RDP_NEG_REQ
             0x00,  # Flags
             0x0008,  # Length
-            0x00000000  # requestedProtocols (TLS not required for screenshot)
+            requested_protocol  # requestedProtocols
         )
 
         payload = cookie + neg_req
@@ -109,18 +170,49 @@ class RDPScreenshot:
         return tpkt_header + x224_header + payload
 
     def parse_x224_response(self, data: bytes) -> bool:
-        """Parse X.224 Connection Confirm"""
+        """Parse X.224 Connection Confirm and extract negotiated protocol"""
         if len(data) < 11:
+            log_debug("Response too short for X.224")
             return False
 
         # Check TPKT header
         if data[0] != 0x03:
+            log_debug(f"Invalid TPKT version: {data[0]}")
             return False
 
         # Check X.224 Connection Confirm (0xd0)
         if data[5] != 0xd0:
+            log_debug(f"Not a Connection Confirm: {data[5]:02x}")
             return False
 
+        # Look for RDP Negotiation Response (TYPE_RDP_NEG_RSP = 0x02)
+        # or Failure (TYPE_RDP_NEG_FAILURE = 0x03)
+        for i in range(11, len(data) - 8):
+            if data[i] == 0x02:  # TYPE_RDP_NEG_RSP
+                # Extract selected protocol
+                selected_protocol = struct.unpack('<I', data[i+4:i+8])[0]
+                self.negotiated_protocol = selected_protocol
+                log_verbose(f"[+] Server selected protocol: 0x{selected_protocol:08x}")
+
+                # Check if TLS is selected
+                if selected_protocol & self.PROTOCOL_SSL:
+                    log_verbose("[*] TLS/SSL negotiation required")
+                    return True
+                elif selected_protocol == self.PROTOCOL_RDP:
+                    log_verbose("[*] Standard RDP security")
+                    return True
+                else:
+                    log_verbose(f"[!] Unsupported protocol: 0x{selected_protocol:08x}")
+                    return False
+
+            elif data[i] == 0x03:  # TYPE_RDP_NEG_FAILURE
+                failure_code = struct.unpack('<I', data[i+4:i+8])[0]
+                log_verbose(f"[-] Server rejected negotiation (code: 0x{failure_code:08x})")
+                return False
+
+        # No negotiation response found - assume standard RDP
+        log_verbose("[*] No negotiation response, assuming standard RDP")
+        self.negotiated_protocol = self.PROTOCOL_RDP
         return True
 
     def create_mcs_connect_initial(self) -> bytes:
@@ -325,7 +417,7 @@ class RDPScreenshot:
                 return None
 
             print("[*] Sending X.224 Connection Request")
-            self.send_packet(self.create_x224_connection_request())
+            self.send_packet(self.create_x224_connection_request(self.selected_protocol))
 
             # Receive X.224 Connection Confirm
             response = self.recv_packet()
@@ -334,6 +426,14 @@ class RDPScreenshot:
                 return None
 
             print("[+] X.224 connection established")
+
+            # If server selected TLS, enable it now
+            if self.negotiated_protocol and (self.negotiated_protocol & self.PROTOCOL_SSL):
+                print("[*] Enabling TLS/SSL")
+                if not self.enable_tls():
+                    print("[-] TLS/SSL negotiation failed")
+                    return None
+                print("[+] TLS/SSL enabled")
 
             # Step 2: MCS Connect Initial
             print("[*] Sending MCS Connect Initial")
@@ -389,8 +489,8 @@ class RDPScreenshotAdvanced(RDPScreenshot):
     This implements the complete RDP handshake to capture actual bitmaps.
     """
 
-    def __init__(self, host: str, port: int = 3389, timeout: int = 15, width: int = 1024, height: int = 768):
-        super().__init__(host, port, timeout, width, height)
+    def __init__(self, host: str, port: int = 3389, timeout: int = 15, width: int = 1024, height: int = 768, protocol: int = None):
+        super().__init__(host, port, timeout, width, height, protocol)
         self.mcs_user_channel = None
         self.mcs_io_channel = 1003
         self.bitmap_data = []
@@ -406,13 +506,21 @@ class RDPScreenshotAdvanced(RDPScreenshot):
                 return None
 
             print("[*] Sending X.224 Connection Request")
-            self.send_packet(self.create_x224_connection_request())
+            self.send_packet(self.create_x224_connection_request(self.selected_protocol))
 
             response = self.recv_packet()
             if not self.parse_x224_response(response):
                 print("[-] Invalid X.224 response")
                 return None
             print("[+] X.224 connection established")
+
+            # If server selected TLS, enable it now
+            if self.negotiated_protocol and (self.negotiated_protocol & self.PROTOCOL_SSL):
+                print("[*] Enabling TLS/SSL")
+                if not self.enable_tls():
+                    print("[-] TLS/SSL negotiation failed")
+                    return None
+                print("[+] TLS/SSL enabled")
 
             # MCS Connect
             print("[*] Sending MCS Connect Initial")
@@ -1059,8 +1167,18 @@ Examples:
     conn_group.add_argument('--width', type=int, default=1024, help='Screenshot width (default: 1024)')
     conn_group.add_argument('--height', type=int, default=768, help='Screenshot height (default: 768)')
     conn_group.add_argument('--advanced', action='store_true', help='Use advanced mode (full protocol implementation)')
+    conn_group.add_argument('--protocol', choices=['auto', 'rdp', 'tls'], default='auto',
+                           help='Protocol to use: auto (try TLS then RDP), rdp (standard RDP), tls (force TLS) (default: auto)')
+
+    # General options
+    general_group = parser.add_argument_group('General Options')
+    general_group.add_argument('-v', '--verbose', action='store_true', help='Enable verbose output')
 
     args = parser.parse_args()
+
+    # Set global verbose flag
+    global VERBOSE
+    VERBOSE = args.verbose
 
     # Validate input
     if not any([args.target, args.ip_list, args.nmap_xml, args.nessus_xml]):
@@ -1088,10 +1206,21 @@ Examples:
     # Remove duplicates
     targets = list(set(targets))
 
+    # Determine protocol
+    protocol_map = {
+        'auto': None,  # Auto-negotiate (default)
+        'rdp': RDPScreenshot.PROTOCOL_RDP,
+        'tls': RDPScreenshot.PROTOCOL_SSL
+    }
+    selected_protocol = protocol_map.get(args.protocol, None)
+
     print(f"[*] Starting RDP screenshot capture for {len(targets)} target(s)")
     print(f"[*] Output directory: {args.output_dir}")
     print(f"[*] Image format: {args.format}")
     print(f"[*] Resolution: {args.width}x{args.height}")
+    print(f"[*] Protocol: {args.protocol}")
+    if args.verbose:
+        print(f"[*] Verbose mode: enabled")
     print()
 
     # Process each target
@@ -1105,9 +1234,9 @@ Examples:
         try:
             # Choose screenshot class
             if args.advanced:
-                rdp = RDPScreenshotAdvanced(host, port, args.timeout, args.width, args.height)
+                rdp = RDPScreenshotAdvanced(host, port, args.timeout, args.width, args.height, selected_protocol)
             else:
-                rdp = RDPScreenshot(host, port, args.timeout, args.width, args.height)
+                rdp = RDPScreenshot(host, port, args.timeout, args.width, args.height, selected_protocol)
 
             # Capture screenshot
             image = rdp.capture_screenshot()
