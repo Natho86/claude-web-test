@@ -1,8 +1,15 @@
 # RDP Screenshot Tool Requirements
 # Python 3.7+
 
-# Image processing
+# Image processing (required for both versions)
 Pillow>=9.0.0
 
-# Optional: For enhanced protocol handling (if needed in future)
-# cryptography>=3.4.8
+# For manual implementation (rdp_screenshot.py)
+# No additional dependencies required - uses built-in ssl module
+
+# For simplified version (rdp_screenshot_simple.py) - RECOMMENDED
+# Uncomment to use the aardwolf-based implementation:
+# aardwolf>=0.2.0
+# asysocks>=0.2.0
+# asyauth>=0.0.9
+# minikerberos>=0.3.0

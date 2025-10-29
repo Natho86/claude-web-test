@@ -191,11 +191,21 @@ class RDPScreenshot:
             log_debug(f"Not a Connection Confirm: {data[5]:02x}")
             return False
 
+        log_verbose(f"[+] X.224 Connection Confirm received ({len(data)} bytes)")
+
         # Look for RDP Negotiation Response (TYPE_RDP_NEG_RSP = 0x02)
         # or Failure (TYPE_RDP_NEG_FAILURE = 0x03)
-        for i in range(11, len(data) - 8):
+        # X.224 payload starts at byte 11 (after 4-byte TPKT + 7-byte X.224 header)
+
+        # Iterate through remaining data looking for negotiation response
+        # FIX: Was range(11, len(data) - 8) which caused empty range on 19-byte responses
+        for i in range(11, len(data)):
+            # Need at least 8 bytes for negotiation response structure
+            if i + 8 > len(data):
+                break
+
             if data[i] == 0x02:  # TYPE_RDP_NEG_RSP
-                # Extract selected protocol
+                # Extract selected protocol (at offset i+4, 4 bytes)
                 selected_protocol = struct.unpack('<I', data[i+4:i+8])[0]
                 self.negotiated_protocol = selected_protocol
                 log_verbose(f"[+] Server selected protocol: 0x{selected_protocol:08x}")
@@ -207,13 +217,18 @@ class RDPScreenshot:
                 elif selected_protocol == self.PROTOCOL_RDP:
                     log_verbose("[*] Standard RDP security")
                     return True
+                elif selected_protocol & self.PROTOCOL_HYBRID:
+                    log_verbose("[!] Server requires NLA (Network Level Authentication)")
+                    log_verbose("[!] Pre-authentication screenshots not possible with NLA")
+                    return False
                 else:
                     log_verbose(f"[!] Unsupported protocol: 0x{selected_protocol:08x}")
                     return False
 
             elif data[i] == 0x03:  # TYPE_RDP_NEG_FAILURE
-                failure_code = struct.unpack('<I', data[i+4:i+8])[0]
-                log_verbose(f"[-] Server rejected negotiation (code: 0x{failure_code:08x})")
+                if i + 8 <= len(data):
+                    failure_code = struct.unpack('<I', data[i+4:i+8])[0]
+                    log_verbose(f"[-] Server rejected negotiation (code: 0x{failure_code:08x})")
                 return False
 
         # No negotiation response found - assume standard RDP
