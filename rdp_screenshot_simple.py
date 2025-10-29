@@ -78,9 +78,9 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             logging.getLogger('asysocks').setLevel(logging.CRITICAL)
 
         # Create connection URL for factory
-        # Format: rdp+simple://domain\username:password@host:port
-        # For pre-auth, use empty credentials
-        connection_url = f"rdp+simple://:{host}:{port}"
+        # Format: rdp+simple://host:port (no credentials for pre-auth)
+        # Format: rdp+simple://domain\username:password@host:port (with credentials)
+        connection_url = f"rdp+simple://{host}:{port}"
         log_verbose(f"[*] Connection URL: {connection_url}")
 
         # Create factory from URL (pass iosettings to from_url)
