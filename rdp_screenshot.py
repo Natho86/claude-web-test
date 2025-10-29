@@ -97,11 +97,24 @@ class RDPScreenshot:
                     # Python < 3.7 compatibility
                     pass
 
-                # Wrap the socket
-                self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
-                self.use_tls = True
-                log_verbose(f"[+] TLS/SSL negotiation successful (Protocol: {self.sock.version()})")
-                return True
+                # Set cipher suites compatible with RDP
+                try:
+                    context.set_ciphers('DEFAULT:!aNULL:!eNULL:!LOW:!EXPORT:!SSLv2')
+                except:
+                    pass
+
+                # Wrap the socket - RDP servers often don't like SNI
+                # Try without server_hostname first
+                log_verbose("[*] Wrapping socket with TLS (without SNI)")
+                try:
+                    self.sock = context.wrap_socket(self.sock, server_hostname=None, do_handshake_on_connect=True)
+                    self.use_tls = True
+                    log_verbose(f"[+] TLS/SSL negotiation successful (Protocol: {self.sock.version()})")
+                    return True
+                except Exception as e:
+                    log_verbose(f"[!] TLS without SNI failed: {e}")
+                    # Some servers might need SNI, but most RDP servers don't
+                    raise
 
             except ssl.SSLError as e:
                 log_verbose(f"[-] {version_name} negotiation failed: {e}")
