@@ -663,9 +663,11 @@ class RDPScreenshotAdvanced(RDPScreenshot):
                 return None
             print(f"[+] MCS User Channel: {self.mcs_user_channel}")
 
-            # Join channels
+            # Join channels (matching xfreerdp sequence)
+            # Channels: 1008, 1003 (I/O), 1004, 1005, 1006, 1007 (virtual channels)
             print("[*] Joining MCS channels")
-            for channel_id in [self.mcs_user_channel, self.mcs_io_channel]:
+            channels_to_join = [1008, 1003, 1004, 1005, 1006, 1007]
+            for channel_id in channels_to_join:
                 self.send_packet(self.create_mcs_channel_join_request(channel_id))
                 response = self.recv_packet()
                 print(f"[+] Joined channel {channel_id}")
@@ -800,7 +802,8 @@ class RDPScreenshotAdvanced(RDPScreenshot):
             channel_id
         )
 
-        x224_data = struct.pack('BB', 2, 0xf0)
+        # TPKT + X.224 Data with EOT flag
+        x224_data = struct.pack('BBB', 2, 0xf0, 0x80)
         total_length = 4 + len(x224_data) + len(mcs_data)
         tpkt_header = struct.pack('>BBH', 0x03, 0x00, total_length)
 
