@@ -753,14 +753,12 @@ class RDPScreenshotAdvanced(RDPScreenshot):
 
     def create_mcs_erect_domain_request(self) -> bytes:
         """Create MCS Erect Domain Request"""
-        # MCS Erect Domain Request
-        mcs_data = struct.pack('>BHH',
-            0x04,  # Erect Domain Request
-            0x01, 0x00  # subHeight, subInterval
-        )
+        # MCS Erect Domain Request (exact bytes from working xfreerdp)
+        # subHeight: 0, subInterval: 0
+        mcs_data = bytes.fromhex('04 01 00 01 00')
 
-        # TPKT + X.224 Data
-        x224_data = struct.pack('BB', 2, 0xf0)
+        # TPKT + X.224 Data with EOT flag
+        x224_data = struct.pack('BBB', 2, 0xf0, 0x80)
         total_length = 4 + len(x224_data) + len(mcs_data)
         tpkt_header = struct.pack('>BBH', 0x03, 0x00, total_length)
 
@@ -768,9 +766,11 @@ class RDPScreenshotAdvanced(RDPScreenshot):
 
     def create_mcs_attach_user_request(self) -> bytes:
         """Create MCS Attach User Request"""
-        mcs_data = b'\x28'  # Attach User Request
+        # MCS Attach User Request (exact bytes from working xfreerdp)
+        mcs_data = b'\x28'
 
-        x224_data = struct.pack('BB', 2, 0xf0)
+        # TPKT + X.224 Data with EOT flag
+        x224_data = struct.pack('BBB', 2, 0xf0, 0x80)
         total_length = 4 + len(x224_data) + len(mcs_data)
         tpkt_header = struct.pack('>BBH', 0x03, 0x00, total_length)
 
