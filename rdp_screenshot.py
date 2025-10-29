@@ -75,25 +75,63 @@ class RDPScreenshot:
 
     def enable_tls(self) -> bool:
         """Wrap socket with TLS/SSL"""
-        try:
-            log_verbose("[*] Negotiating TLS/SSL connection")
-            # Create SSL context with relaxed settings for older servers
-            context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            # Support older TLS versions
-            context.minimum_version = ssl.TLSVersion.TLSv1
-            context.options &= ~ssl.OP_NO_TLSv1
-            context.options &= ~ssl.OP_NO_TLSv1_1
+        # Try different TLS versions in order of preference
+        tls_versions = [
+            (ssl.TLSVersion.TLSv1_2, "TLS 1.2+"),  # Try TLS 1.2+ first (most common)
+            (ssl.TLSVersion.TLSv1, "TLS 1.0+"),    # Fallback to TLS 1.0+ for older servers
+        ]
 
-            # Wrap the socket
-            self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
-            self.use_tls = True
-            log_verbose(f"[+] TLS/SSL negotiation successful (Protocol: {self.sock.version()})")
-            return True
-        except Exception as e:
-            log_verbose(f"[-] TLS/SSL negotiation failed: {e}")
-            return False
+        for min_version, version_name in tls_versions:
+            try:
+                log_verbose(f"[*] Attempting TLS negotiation with {version_name}")
+
+                # Create SSL context
+                context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+                context.check_hostname = False
+                context.verify_mode = ssl.CERT_NONE
+
+                # Set minimum TLS version
+                try:
+                    context.minimum_version = min_version
+                except AttributeError:
+                    # Python < 3.7 compatibility
+                    pass
+
+                # Wrap the socket
+                self.sock = context.wrap_socket(self.sock, server_hostname=self.host)
+                self.use_tls = True
+                log_verbose(f"[+] TLS/SSL negotiation successful (Protocol: {self.sock.version()})")
+                return True
+
+            except ssl.SSLError as e:
+                log_verbose(f"[-] {version_name} negotiation failed: {e}")
+                # If this wasn't the last attempt, reconnect and try next version
+                if min_version != tls_versions[-1][0]:
+                    log_verbose("[*] Reconnecting to try different TLS version...")
+                    # Close and reconnect
+                    try:
+                        self.close()
+                        if not self.connect():
+                            log_verbose("[-] Reconnection failed")
+                            return False
+
+                        # Re-send X.224 Connection Request
+                        log_verbose("[*] Re-sending X.224 Connection Request")
+                        self.send_packet(self.create_x224_connection_request(self.selected_protocol))
+                        response = self.recv_packet()
+                        if not self.parse_x224_response(response):
+                            log_verbose("[-] X.224 re-negotiation failed")
+                            return False
+                    except:
+                        return False
+                continue
+
+            except Exception as e:
+                log_verbose(f"[-] TLS/SSL negotiation failed: {e}")
+                return False
+
+        log_verbose("[-] All TLS version attempts failed")
+        return False
 
     def close(self):
         """Close socket connection"""
