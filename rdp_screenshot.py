@@ -328,8 +328,8 @@ class RDPScreenshot:
         mcs_data = self._encode_mcs_connect_initial(gcc_ccr)
 
         # TPKT + X.224 Data header
-        # X.224 Data TPDU: LI (1 byte) + Code (1 byte)
-        x224_data = struct.pack('BB', 2, 0xf0)  # X.224 Data TPDU (standard 2-byte format)
+        # X.224 Data TPDU: LI (1 byte) + Code (1 byte) + EOT (1 byte)
+        x224_data = struct.pack('BBB', 2, 0xf0, 0x80)  # X.224 Data TPDU with EOT flag
 
         total_length = 4 + len(x224_data) + len(mcs_data)
         tpkt_header = struct.pack('>BBH', 0x03, 0x00, total_length)
@@ -430,37 +430,37 @@ class RDPScreenshot:
         mcs_data += b'\x01\x01\xff'
 
         # targetParameters (DomainParameters)
-        mcs_data += b'\x30\x19'  # SEQUENCE
-        mcs_data += b'\x02\x01\x22'  # maxChannelIds
-        mcs_data += b'\x02\x01\x20'  # maxUserIds
-        mcs_data += b'\x02\x01\x00'  # maxTokenIds
-        mcs_data += b'\x02\x01\x01'  # numPriorities
-        mcs_data += b'\x02\x01\x00'  # minThroughput
-        mcs_data += b'\x02\x01\x01'  # maxHeight
-        mcs_data += b'\x02\x02\xff\xff'  # maxMCSPDUsize
-        mcs_data += b'\x02\x01\x02'  # protocolVersion
+        mcs_data += b'\x30\x1a'  # SEQUENCE (length 26)
+        mcs_data += b'\x02\x01\x22'  # maxChannelIds = 34
+        mcs_data += b'\x02\x01\x02'  # maxUserIds = 2 (FIXED: was 0x20)
+        mcs_data += b'\x02\x01\x00'  # maxTokenIds = 0
+        mcs_data += b'\x02\x01\x01'  # numPriorities = 1
+        mcs_data += b'\x02\x01\x00'  # minThroughput = 0
+        mcs_data += b'\x02\x01\x01'  # maxHeight = 1
+        mcs_data += b'\x02\x02\xff\xff'  # maxMCSPDUsize = 65535
+        mcs_data += b'\x02\x01\x02'  # protocolVersion = 2
 
-        # minimumParameters (same)
-        mcs_data += b'\x30\x18'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x01\x00'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x02\x04\x20'
-        mcs_data += b'\x02\x01\x02'
+        # minimumParameters
+        mcs_data += b'\x30\x19'  # SEQUENCE (length 25) (FIXED: was 0x18)
+        mcs_data += b'\x02\x01\x01'  # maxChannelIds = 1
+        mcs_data += b'\x02\x01\x01'  # maxUserIds = 1
+        mcs_data += b'\x02\x01\x01'  # maxTokenIds = 1
+        mcs_data += b'\x02\x01\x01'  # numPriorities = 1
+        mcs_data += b'\x02\x01\x00'  # minThroughput = 0
+        mcs_data += b'\x02\x01\x01'  # maxHeight = 1
+        mcs_data += b'\x02\x02\x04\x20'  # maxMCSPDUsize = 1056
+        mcs_data += b'\x02\x01\x02'  # protocolVersion = 2
 
         # maximumParameters
-        mcs_data += b'\x30\x19'
-        mcs_data += b'\x02\x01\xff'
-        mcs_data += b'\x02\x01\xff'
-        mcs_data += b'\x02\x01\xff'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x01\x00'
-        mcs_data += b'\x02\x01\x01'
-        mcs_data += b'\x02\x02\xff\xff'
-        mcs_data += b'\x02\x01\x02'
+        mcs_data += b'\x30\x1c'  # SEQUENCE (length 28) (FIXED: was 0x19)
+        mcs_data += b'\x02\x02\xff\xff'  # maxChannelIds = 65535 (FIXED: was 0x02 0x01 0xff)
+        mcs_data += b'\x02\x02\xfc\x17'  # maxUserIds = 64535 (FIXED: was 0x02 0x01 0xff)
+        mcs_data += b'\x02\x01\xff'  # maxTokenIds = 255
+        mcs_data += b'\x02\x01\x01'  # numPriorities = 1
+        mcs_data += b'\x02\x01\x00'  # minThroughput = 0
+        mcs_data += b'\x02\x01\x01'  # maxHeight = 1
+        mcs_data += b'\x02\x02\xff\xff'  # maxMCSPDUsize = 65535
+        mcs_data += b'\x02\x01\x02'  # protocolVersion = 2
 
         # userData (OCTET STRING)
         mcs_data += b'\x04'
