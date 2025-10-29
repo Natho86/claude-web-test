@@ -290,39 +290,10 @@ class RDPScreenshot:
     def create_mcs_connect_initial(self) -> bytes:
         """Create MCS Connect Initial PDU with client capabilities"""
 
-        # Generic Conference Control (GCC) data
-        # This is a simplified version - full GCC encoding is complex
-        client_name = b"rdp-screenshot\x00"
-
-        # Client Core Data (TS_UD_CS_CORE)
-        core_data = self._create_client_core_data()
-
-        # Client Security Data (TS_UD_CS_SEC)
-        sec_data = struct.pack('<HHI',
-            0xc002,  # CS_SECURITY
-            12,  # length
-            0x00000000  # encryptionMethods (none)
-        )
-
-        # Client Network Data (TS_UD_CS_NET) - optional
-        net_data = struct.pack('<HHI',
-            0xc003,  # CS_NET
-            8,  # length
-            0  # channelCount
-        )
-
-        # Client Cluster Data (TS_UD_CS_CLUSTER)
-        cluster_data = struct.pack('<HHII',
-            0xc004,  # CS_CLUSTER
-            12,  # length
-            0x0d,  # Flags (redirected session)
-            0  # RedirectedSessionID
-        )
-
-        gcc_data = core_data + sec_data + net_data + cluster_data
-
-        # GCC Conference Create Request wrapper (simplified)
-        gcc_ccr = self._encode_gcc_ccr(gcc_data)
+        # Use working xfreerdp GCC Conference Create Request
+        # This includes the correct H.221 key, GCC structure, and Client Data blocks
+        # that are known to work with RDP servers
+        gcc_ccr = self._encode_gcc_ccr_xfreerdp()
 
         # MCS Connect Initial (simplified BER encoding)
         mcs_data = self._encode_mcs_connect_initial(gcc_ccr)
@@ -383,6 +354,43 @@ class RDPScreenshot:
         data += struct.pack('<I', 0x00000000)  # serverSelectedProtocol
 
         return data
+
+    def _encode_gcc_ccr_xfreerdp(self) -> bytes:
+        """
+        Return GCC Conference Create Request using xfreerdp's working bytes.
+        This is extracted from a working xfreerdp connection that successfully
+        connects to RDP servers.
+        """
+        # Working GCC Conference Create Request userData from xfreerdp (312 bytes)
+        # Includes H.221 key + GCC structure + Client Data blocks:
+        # - CS_CORE (0xc001): Client core data
+        # - CS_SECURITY (0xc002): Encryption methods
+        # - CS_NET (0xc003): Virtual channel definitions (rdpdr, rdpsnd, snddbg, rdpdynvc)
+        # - CS_CLUSTER (0xc004): Cluster/session info
+        gcc_data = bytes.fromhex("""
+            00 05 00 14 7c 00 01 2a 14 76 0a 01 01 00 01 c0
+            00 4d 53 54 53 43 00 0e 00 00 00 01 00 00 00 01
+            00 00 00 01 00 00 00 00 00 00 00 ff ff ff ff ff
+            ff ff ff 00 00 00 00 07 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 01 ca 01 00 00 00 00 00 18 00 0f 00 09
+            00 08 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+            00 00 00 00 00 00 00 04 c0 0c 00 0d 00 00 00 00
+            00 00 00 02 c0 0c 00 03 00 00 00 00 00 00 00 03
+            c0 2c 00 03 00 00 00 72 64 70 64 72 00 00 00 00
+            00 80 80 72 64 70 73 6e 64 00 00 00 00 00 c0 00
+            73 6e 64 64 62 67 00 00 00 00 c0 00 72 64 70 64
+            79 6e 76 63 00 00 80 80
+        """.replace('\n', '').replace(' ', ''))
+
+        return gcc_data
 
     def _encode_gcc_ccr(self, user_data: bytes) -> bytes:
         """Encode GCC Conference Create Request (simplified)"""
