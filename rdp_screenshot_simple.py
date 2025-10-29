@@ -21,7 +21,6 @@ except ImportError:
 
 try:
     from aardwolf.commons.factory import RDPConnectionFactory
-    from aardwolf.commons.target import RDPTarget
     from aardwolf.commons.iosettings import RDPIOSettings
     from aardwolf.commons.queuedata.constants import VIDEO_FORMAT
     from aardwolf import logger as aardwolf_logger
@@ -53,13 +52,6 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
     try:
         log_verbose(f"[*] Connecting to {host}:{port}")
 
-        # Create RDP target
-        target = RDPTarget(
-            ip=host,
-            port=port,
-            timeout=timeout
-        )
-
         # Create IO settings (must be created before factory)
         iosettings = RDPIOSettings()
         iosettings.channels = []
@@ -83,11 +75,12 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
         connection_url = f"rdp+simple://{host}:{port}"
         log_verbose(f"[*] Connection URL: {connection_url}")
 
-        # Create factory from URL (pass iosettings to from_url)
+        # Create factory from URL (factory automatically creates target from URL)
         factory = RDPConnectionFactory.from_url(connection_url, iosettings)
 
-        # Create connection using factory (official pattern)
-        connection = factory.create_connection_newtarget(target, iosettings)
+        # Create connection using factory's get_connection method
+        # The factory already has the target from the URL
+        connection = factory.get_connection(iosettings)
 
         log_verbose("[*] Starting RDP connection...")
 
