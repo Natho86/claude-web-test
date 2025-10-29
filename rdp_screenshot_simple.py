@@ -11,6 +11,7 @@ import xml.etree.ElementTree as ET
 from typing import List, Tuple, Optional
 import asyncio
 import time
+import io
 
 try:
     from PIL import Image
@@ -19,12 +20,14 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from aardwolf.commons.url import RDPConnectionURL
+    from aardwolf.connection import RDPConnection
+    from aardwolf.commons.target import RDPTarget
     from aardwolf.commons.iosettings import RDPIOSettings
+    from asyauth.common.credentials.ntlm import NTLMCredential
+    from asyauth.common.constants import asyauthSecret
     from aardwolf import logger as aardwolf_logger
-    from aardwolf.client import RDPClient
-except ImportError:
-    print("Error: aardwolf library not found.")
+except ImportError as e:
+    print(f"Error: aardwolf library not found. {e}")
     print("Install with: pip install aardwolf")
     print("\nAlternatively, use the manual implementation: rdp_screenshot.py")
     sys.exit(1)
@@ -45,17 +48,25 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
 
     Returns PIL Image or None on failure
     """
+    connection = None
     try:
-        # Build RDP connection URL
-        # Format: rdp+simple://domain\username:password@host:port/?param=value
-        # For pre-auth screenshot, we use empty credentials
-        url = f"rdp+simple://:{host}:{port}/"
-
         log_verbose(f"[*] Connecting to {host}:{port}")
-        log_verbose(f"[*] RDP URL: {url}")
 
-        # Parse URL
-        rdp_url = RDPConnectionURL(url)
+        # Create RDP target
+        target = RDPTarget(
+            ip=host,
+            port=port,
+            timeout=timeout
+        )
+
+        # Create empty credentials for pre-auth attempt
+        # Use empty NTLM credentials
+        credential = NTLMCredential()
+        credential.username = ""
+        credential.domain = ""
+        credential.password = asyauthSecret("")
+
+        log_verbose("[*] Using empty credentials (pre-authentication mode)")
 
         # Create IO settings
         settings = RDPIOSettings()
@@ -63,77 +74,87 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
         settings.video_height = height
         settings.video_bpp_min = 15  # Minimum color depth
         settings.video_bpp_max = 32  # Maximum color depth
-
-        # Create RDP client
-        client = RDPClient(rdp_url, settings)
+        settings.video_out_format = 'PIL'  # Request PIL format if supported
 
         # Disable aardwolf logging unless verbose
         if not VERBOSE:
             import logging
             logging.getLogger('aardwolf').setLevel(logging.CRITICAL)
+            logging.getLogger('asyauth').setLevel(logging.CRITICAL)
+            logging.getLogger('asysocks').setLevel(logging.CRITICAL)
+
+        # Create RDP connection
+        connection = RDPConnection(target, credential, settings)
 
         log_verbose("[*] Starting RDP connection...")
 
-        # Connect with timeout
+        # Connect (this is async)
         try:
-            # Run connection in background
-            connect_task = asyncio.create_task(client.connect())
-
-            # Wait a bit for connection to establish
-            await asyncio.sleep(2)
-
+            await asyncio.wait_for(connection.connect(), timeout=timeout)
             log_verbose("[+] RDP connection established")
-            log_verbose("[*] Waiting for screen data...")
-
-            # Wait for screen data (up to timeout seconds)
-            max_wait = timeout
-            wait_step = 0.5
-            waited = 0
-
-            while waited < max_wait:
-                # Check if we have screen data
-                if hasattr(client, 'desktop_buffer') and client.desktop_buffer:
-                    log_verbose("[+] Screen data received!")
-
-                    # Get the desktop buffer
-                    # The buffer format depends on aardwolf version
-                    # Try to convert to PIL Image
-                    try:
-                        # Method 1: Direct PIL conversion if buffer is compatible
-                        img = Image.frombytes('RGB', (width, height),
-                                             bytes(client.desktop_buffer))
-                        return img
-                    except:
-                        # Method 2: Try alternative buffer access
-                        log_verbose("[*] Trying alternative buffer access...")
-                        pass
-
-                await asyncio.sleep(wait_step)
-                waited += wait_step
-
-            log_verbose("[!] Timeout waiting for screen data")
-            log_verbose("[!] Pre-authentication screenshots may not be available")
-            log_verbose("[!] Server might require NLA (Network Level Authentication)")
-
-            # Create placeholder to indicate connection was attempted
-            img = Image.new('RGB', (width, height), color='darkblue')
-            return img
-
         except asyncio.TimeoutError:
             print(f"[-] Connection timeout after {timeout} seconds")
             return None
         except Exception as e:
-            print(f"[-] Connection error: {e}")
-            if VERBOSE:
-                import traceback
-                traceback.print_exc()
-            return None
-        finally:
-            # Disconnect
+            # Connection might fail if NLA is required
+            if 'NLA' in str(e) or 'CredSSP' in str(e):
+                print(f"[-] Server requires NLA (Network Level Authentication)")
+                print(f"[!] Pre-authentication screenshots not possible with NLA")
+                return None
+            else:
+                print(f"[-] Connection error: {e}")
+                if VERBOSE:
+                    import traceback
+                    traceback.print_exc()
+                return None
+
+        log_verbose("[*] Waiting for screen data...")
+
+        # Wait for screen data with timeout
+        max_wait = timeout
+        wait_step = 0.5
+        waited = 0
+
+        while waited < max_wait:
+            # Try to get desktop buffer
             try:
-                await client.disconnect()
-            except:
-                pass
+                buffer = connection.get_desktop_buffer()
+                if buffer:
+                    log_verbose(f"[+] Screen data received! ({len(buffer)} bytes)")
+
+                    # Try to convert to PIL Image
+                    try:
+                        # Buffer might be PIL Image already
+                        if isinstance(buffer, Image.Image):
+                            log_verbose("[+] Got PIL Image directly")
+                            return buffer
+
+                        # Try as raw bytes
+                        img = Image.frombytes('RGB', (width, height), bytes(buffer))
+                        log_verbose("[+] Converted buffer to PIL Image")
+                        return img
+                    except Exception as e:
+                        log_verbose(f"[!] Failed to convert buffer: {e}")
+                        # Try alternative conversion
+                        try:
+                            img = Image.open(io.BytesIO(buffer))
+                            log_verbose("[+] Loaded image from buffer")
+                            return img
+                        except:
+                            pass
+            except Exception as e:
+                log_verbose(f"[!] Error getting buffer: {e}")
+
+            await asyncio.sleep(wait_step)
+            waited += wait_step
+
+        log_verbose("[!] Timeout waiting for screen data")
+        log_verbose("[!] Pre-authentication screenshots may not be available")
+        log_verbose("[!] Server might require authentication first")
+
+        # Create placeholder to indicate connection was attempted
+        img = Image.new('RGB', (width, height), color='darkblue')
+        return img
 
     except Exception as e:
         print(f"[-] Failed to capture screenshot: {e}")
@@ -141,6 +162,13 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             import traceback
             traceback.print_exc()
         return None
+    finally:
+        # Disconnect
+        if connection:
+            try:
+                await connection.terminate()
+            except:
+                pass
 
 
 def parse_nessus_xml(file_path: str) -> List[Tuple[str, int]]:
