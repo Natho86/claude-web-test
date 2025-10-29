@@ -60,13 +60,7 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             timeout=timeout
         )
 
-        # Create connection URL for factory
-        # Format: rdp+simple://domain\username:password@host:port
-        # For pre-auth, use empty credentials
-        connection_url = f"rdp+simple://:{host}:{port}"
-        log_verbose(f"[*] Connection URL: {connection_url}")
-
-        # Create IO settings (matching official example)
+        # Create IO settings (must be created before factory)
         iosettings = RDPIOSettings()
         iosettings.channels = []
         iosettings.video_width = width
@@ -83,8 +77,14 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             logging.getLogger('asyauth').setLevel(logging.CRITICAL)
             logging.getLogger('asysocks').setLevel(logging.CRITICAL)
 
-        # Create factory from URL
-        factory = RDPConnectionFactory.from_url(connection_url)
+        # Create connection URL for factory
+        # Format: rdp+simple://domain\username:password@host:port
+        # For pre-auth, use empty credentials
+        connection_url = f"rdp+simple://:{host}:{port}"
+        log_verbose(f"[*] Connection URL: {connection_url}")
+
+        # Create factory from URL (pass iosettings to from_url)
+        factory = RDPConnectionFactory.from_url(connection_url, iosettings)
 
         # Create connection using factory (official pattern)
         connection = factory.create_connection_newtarget(target, iosettings)
