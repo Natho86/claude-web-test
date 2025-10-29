@@ -20,11 +20,10 @@ except ImportError:
     sys.exit(1)
 
 try:
-    from aardwolf.connection import RDPConnection
+    from aardwolf.commons.factory import RDPConnectionFactory
     from aardwolf.commons.target import RDPTarget
     from aardwolf.commons.iosettings import RDPIOSettings
-    from asyauth.common.credentials.ntlm import NTLMCredential
-    from asyauth.common.constants import asyauthSecret
+    from aardwolf.commons.queuedata.constants import VIDEO_FORMAT
     from aardwolf import logger as aardwolf_logger
 except ImportError as e:
     print(f"Error: aardwolf library not found. {e}")
@@ -42,9 +41,11 @@ def log_verbose(msg: str):
 
 
 async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
-                                  width: int = 1024, height: int = 768) -> Optional[Image.Image]:
+                                  width: int = 1024, height: int = 768,
+                                  screentime: int = 5) -> Optional[Image.Image]:
     """
     Capture RDP screenshot using aardwolf library
+    Based on official aardwolf example: rdpscreen.py
 
     Returns PIL Image or None on failure
     """
@@ -59,22 +60,21 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             timeout=timeout
         )
 
-        # Create empty credentials for pre-auth attempt
-        # Use empty NTLM credentials
-        credential = NTLMCredential()
-        credential.username = ""
-        credential.domain = ""
-        credential.password = asyauthSecret("")
+        # Create connection URL for factory
+        # Format: rdp+simple://domain\username:password@host:port
+        # For pre-auth, use empty credentials
+        connection_url = f"rdp+simple://:{host}:{port}"
+        log_verbose(f"[*] Connection URL: {connection_url}")
 
-        log_verbose("[*] Using empty credentials (pre-authentication mode)")
-
-        # Create IO settings
-        settings = RDPIOSettings()
-        settings.video_width = width
-        settings.video_height = height
-        settings.video_bpp_min = 15  # Minimum color depth
-        settings.video_bpp_max = 32  # Maximum color depth
-        settings.video_out_format = 'PIL'  # Request PIL format if supported
+        # Create IO settings (matching official example)
+        iosettings = RDPIOSettings()
+        iosettings.channels = []
+        iosettings.video_width = width
+        iosettings.video_height = height
+        iosettings.video_bpp_min = 15
+        iosettings.video_bpp_max = 32
+        iosettings.video_out_format = VIDEO_FORMAT.PIL  # Request PIL format
+        iosettings.clipboard_use_pyperclip = False
 
         # Disable aardwolf logging unless verbose
         if not VERBOSE:
@@ -83,79 +83,59 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             logging.getLogger('asyauth').setLevel(logging.CRITICAL)
             logging.getLogger('asysocks').setLevel(logging.CRITICAL)
 
-        # Create RDP connection
-        connection = RDPConnection(target, credential, settings)
+        # Create factory from URL
+        factory = RDPConnectionFactory.from_url(connection_url)
+
+        # Create connection using factory (official pattern)
+        connection = factory.create_connection_newtarget(target, iosettings)
 
         log_verbose("[*] Starting RDP connection...")
 
-        # Connect (this is async)
-        try:
-            await asyncio.wait_for(connection.connect(), timeout=timeout)
-            log_verbose("[+] RDP connection established")
-        except asyncio.TimeoutError:
-            print(f"[-] Connection timeout after {timeout} seconds")
-            return None
-        except Exception as e:
-            # Connection might fail if NLA is required
-            if 'NLA' in str(e) or 'CredSSP' in str(e):
+        # Connect (returns tuple: result, error)
+        _, err = await asyncio.wait_for(connection.connect(), timeout=timeout)
+        if err is not None:
+            # Check for NLA requirement
+            if 'NLA' in str(err) or 'CredSSP' in str(err) or 'HYBRID' in str(err):
                 print(f"[-] Server requires NLA (Network Level Authentication)")
                 print(f"[!] Pre-authentication screenshots not possible with NLA")
                 return None
             else:
-                print(f"[-] Connection error: {e}")
+                print(f"[-] Connection error: {err}")
                 if VERBOSE:
                     import traceback
                     traceback.print_exc()
                 return None
 
-        log_verbose("[*] Waiting for screen data...")
+        log_verbose("[+] RDP connection established")
+        log_verbose(f"[*] Waiting {screentime} seconds for screen to render...")
 
-        # Wait for screen data with timeout
-        max_wait = timeout
-        wait_step = 0.5
-        waited = 0
+        # Wait for screen to render (official example uses 5 seconds)
+        await asyncio.sleep(screentime)
 
-        while waited < max_wait:
-            # Try to get desktop buffer
-            try:
-                buffer = connection.get_desktop_buffer()
-                if buffer:
-                    log_verbose(f"[+] Screen data received! ({len(buffer)} bytes)")
+        # Check if we have desktop buffer data
+        if connection.desktop_buffer_has_data is True:
+            log_verbose("[+] Desktop buffer has data!")
 
-                    # Try to convert to PIL Image
-                    try:
-                        # Buffer might be PIL Image already
-                        if isinstance(buffer, Image.Image):
-                            log_verbose("[+] Got PIL Image directly")
-                            return buffer
+            # Get desktop buffer as PIL Image (official method)
+            buffer = connection.get_desktop_buffer(VIDEO_FORMAT.PIL)
 
-                        # Try as raw bytes
-                        img = Image.frombytes('RGB', (width, height), bytes(buffer))
-                        log_verbose("[+] Converted buffer to PIL Image")
-                        return img
-                    except Exception as e:
-                        log_verbose(f"[!] Failed to convert buffer: {e}")
-                        # Try alternative conversion
-                        try:
-                            img = Image.open(io.BytesIO(buffer))
-                            log_verbose("[+] Loaded image from buffer")
-                            return img
-                        except:
-                            pass
-            except Exception as e:
-                log_verbose(f"[!] Error getting buffer: {e}")
+            if buffer:
+                log_verbose("[+] Screenshot captured successfully")
+                return buffer
+            else:
+                log_verbose("[!] Buffer was empty")
+        else:
+            log_verbose("[!] No desktop buffer data available")
+            log_verbose("[!] Server may require authentication before showing desktop")
 
-            await asyncio.sleep(wait_step)
-            waited += wait_step
+        return None
 
-        log_verbose("[!] Timeout waiting for screen data")
-        log_verbose("[!] Pre-authentication screenshots may not be available")
-        log_verbose("[!] Server might require authentication first")
-
-        # Create placeholder to indicate connection was attempted
-        img = Image.new('RGB', (width, height), color='darkblue')
-        return img
-
+    except asyncio.TimeoutError:
+        print(f"[-] Connection timeout after {timeout} seconds")
+        return None
+    except asyncio.CancelledError:
+        log_verbose("[!] Connection cancelled")
+        return None
     except Exception as e:
         print(f"[-] Failed to capture screenshot: {e}")
         if VERBOSE:
@@ -163,10 +143,11 @@ async def capture_rdp_screenshot(host: str, port: int = 3389, timeout: int = 15,
             traceback.print_exc()
         return None
     finally:
-        # Disconnect
-        if connection:
+        # Disconnect (official cleanup pattern)
+        if connection is not None:
             try:
                 await connection.terminate()
+                log_verbose("[*] Connection terminated")
             except:
                 pass
 
@@ -327,7 +308,7 @@ async def main_async(args):
         try:
             # Capture screenshot
             image = await capture_rdp_screenshot(
-                host, port, args.timeout, args.width, args.height
+                host, port, args.timeout, args.width, args.height, args.screentime
             )
 
             if image:
@@ -392,6 +373,7 @@ Install with: pip install aardwolf
     # Connection options
     conn_group = parser.add_argument_group('Connection Options')
     conn_group.add_argument('--timeout', type=int, default=15, help='Connection timeout in seconds (default: 15)')
+    conn_group.add_argument('--screentime', type=int, default=5, help='Time to wait for screen to render in seconds (default: 5)')
     conn_group.add_argument('--width', type=int, default=1024, help='Screenshot width (default: 1024)')
     conn_group.add_argument('--height', type=int, default=768, help='Screenshot height (default: 768)')
 
